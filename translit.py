@@ -12,6 +12,7 @@ import copy
 import json
 from tqdm import tqdm
 import datetime, time
+import math
 
 from translit_utils.data import TextEncoder, load_datasets, create_dataloader
 from translit_utils.metrics import compute_metrics
@@ -30,7 +31,11 @@ class PositionalEncoding(nn.Module):
     def __init__(self, hidden_size, max_len=512):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, hidden_size, requires_grad=False)
-        # TODO: implement your code here 
+        # TODO: implement your code here
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, hidden_size, 2).float()*(-math.log(10000.0)/hidden_size))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0)
         # pe shape: (1, max_len, hidden_size)
         self.register_buffer('pe', pe)
@@ -108,7 +113,15 @@ class MultiHeadAttention(nn.Module):
         ## output shape: (batch size, number of heads, sequence length, head hidden size)
         ## TODO: provide your implementation here
         ## don't forget to apply dropout to attn_weights if self.dropout is not None
-        raise NotImplementedError
+        d_k = query.size()[-1]
+        attn_weights = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+        if mask is not None:
+            attn_weights = attn_weights.masked_fill(mask==0, -9e15)
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        if self.dropout is not None:
+            attn_weights = self.dropout_layer(attn_weights)
+        output = torch.matmul(attn_weights, value)
+
         return output, attn_weights
 
     def forward(self, query, key, value, mask=None):
@@ -272,7 +285,11 @@ class LrScheduler:
         self.type = kwargs['type']
         if self.type == 'warmup,decay_linear':
             ## TODO: provide your implementation here
-            raise NotImplementedError
+            self.warmup_steps = int(n_steps * kwargs['warmup_steps_part'])
+            self.lr_peak = kwargs['lr_peak']
+            self.warmup = self.lr_peak / self.warmup_steps
+            self.decrease = self.lr_peak / (n_steps - self.warmup_steps)
+            # raise NotImplementedError
         else:
             raise ValueError(f'Unknown type argument: {self.type}')
         self._step = 0
@@ -289,7 +306,11 @@ class LrScheduler:
             step = self._step
         if self.type == 'warmup,decay_linear':
             ## TODO: provide your implementation here
-            raise NotImplementedError
+            if step <= self.warmup_steps:
+                self._lr = step * self.warmup
+            else:
+                self._lr = self.lr_peak - (self.decrease * (step - self.warmup_steps))
+
         return self._lr
 
     def state_dict(self):
