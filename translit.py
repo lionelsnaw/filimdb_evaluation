@@ -329,13 +329,43 @@ def format_time(elapsed):
     elapsed_rounded = int(round((elapsed)))
     return str(datetime.timedelta(seconds=elapsed_rounded))
 
+class LabelSmoothingLoss(torch.nn.Module):
+    def __init__(self, smoothing: float = 0.1, 
+                 reduction="mean", weight=None):
+        super(LabelSmoothingLoss, self).__init__()
+        self.smoothing   = smoothing
+        self.reduction = reduction
+        self.weight    = weight
 
+    def reduce_loss(self, loss):
+        return loss.mean() if self.reduction == 'mean' else loss.sum() \
+         if self.reduction == 'sum' else loss
+
+    def linear_combination(self, x, y):
+        return self.smoothing * x + (1 - self.smoothing) * y
+
+    def forward(self, preds, target):
+        assert 0 <= self.smoothing < 1
+
+        if self.weight is not None:
+            self.weight = self.weight.to(preds.device)
+
+        n = preds.size(-1)
+        log_preds = F.log_softmax(preds, dim=-1)
+        loss = self.reduce_loss(-log_preds.sum(dim=-1))
+        nll = F.nll_loss(
+            log_preds, target, reduction=self.reduction, weight=self.weight
+        )
+        return self.linear_combination(loss / n, nll)
+
+lern = []
 def run_epoch(data_iter, model, lr_scheduler, optimizer, device, verbose=False):
     start = time.time()
     local_start = start
     total_tokens = 0
     total_loss = 0
     tokens = 0
+    # loss_fn = LabelSmoothingLoss(smoothing=0.3, reduction="mean")
     loss_fn = nn.CrossEntropyLoss(reduction='sum')
     for i, batch in tqdm(enumerate(data_iter)):
         encoder_input = batch[0].to(device)
@@ -361,12 +391,18 @@ def run_epoch(data_iter, model, lr_scheduler, optimizer, device, verbose=False):
             local_start = time.time()
             tokens = 0
 
+
     average_loss = total_loss / total_tokens
     print('** End of epoch, accumulated average loss = %f **' % average_loss)
     epoch_elapsed_time = format_time(time.time() - start)
     print(f'** Elapsed time: {epoch_elapsed_time}**')
+    nlr = get_lr(optimizer)
+    lern.append(nlr)
     return average_loss
 
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
 
 def save_checkpoint(epoch, model, lr_scheduler, optimizer, model_dir_path):
     save_path = os.path.join(model_dir_path, f'cpkt_{epoch}_epoch')
@@ -477,17 +513,26 @@ def train(source_strings, target_strings):
                                          train_config['batch_size'],
                                          shuffle_batches_each_epoch=True)
     # training cycle
+    ll = []
     for epoch in range(1,train_config['n_epochs']+1):
         print('\n' + '-'*40)
         print(f'Epoch: {epoch}')
         print(f'Run training...')
         model.train()
-        run_epoch(train_dataloader, model,
-                  lr_scheduler, optimizer, device=device, verbose=False)
+        ll.append(run_epoch(train_dataloader, model,
+                  lr_scheduler, optimizer, device=device, verbose=False))
+        
     learnable_params = {
         'model': model,
         'text_encoder': text_encoder,
     }
+    with open('your_file1.txt', 'w') as f:
+        for item in ll:
+            f.write("%s\n" % item)
+    with open('your_file2.txt', 'w') as f:
+        for item in lern:
+            f.write("%s\n" % item)
+    return learnable_params
     return learnable_params
 
 def classify(source_strings, learnable_params):
